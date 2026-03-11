@@ -606,6 +606,29 @@ const CSS = `
   .diag-load{ background:#5AB4FF; animation:pulse 1s infinite; }
   @keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }
   .spin { animation:spin .9s linear infinite; display:inline-block; }
+  /* Screenshot upload tab */
+  .upload-zone { margin:20px 20px 0; border:2px dashed #1E4060; border-radius:16px; padding:40px 20px; text-align:center; cursor:pointer; transition:all .2s; background:rgba(10,20,35,.6); position:relative; }
+  .upload-zone:hover,.upload-zone.drag { border-color:#3A80C0; background:rgba(0,60,120,.12); }
+  .upload-zone input { position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; height:100%; }
+  .upload-icon { font-size:48px; margin-bottom:12px; }
+  .upload-title { font-family:'Bebas Neue',sans-serif; font-size:22px; letter-spacing:2px; color:#5ABCE0; margin-bottom:6px; }
+  .upload-sub { font-size:13px; color:#3A6080; line-height:1.5; }
+  .preview-wrap { margin:16px 20px 0; position:relative; }
+  .preview-img { width:100%; max-height:420px; object-fit:contain; border-radius:12px; border:1px solid #1A3A50; background:#060E18; display:block; }
+  .preview-clear { position:absolute; top:8px; right:8px; background:rgba(0,0,0,.7); border:1px solid #FF5555; color:#FF5555; border-radius:6px; padding:4px 10px; cursor:pointer; font-family:'Bebas Neue',sans-serif; font-size:12px; letter-spacing:1px; }
+  .ai-status { margin:12px 20px 0; padding:14px 18px; border-radius:10px; display:flex; align-items:center; gap:12px; font-size:13px; }
+  .ai-status.thinking { background:rgba(100,160,255,.06); border:1px solid rgba(100,160,255,.2); color:#7AAAE8; }
+  .ai-status.success  { background:rgba(0,255,157,.06);  border:1px solid rgba(0,255,157,.25); color:#7ADCA8; }
+  .ai-status.error    { background:rgba(255,80,80,.06);  border:1px solid rgba(255,80,80,.25);  color:#FF8888; }
+  .ai-result { margin:12px 20px 0; border-radius:12px; overflow:hidden; border:1px solid #1A3A50; }
+  .ai-result-header { background:#0A1A28; padding:10px 16px; font-family:'Bebas Neue',sans-serif; font-size:13px; letter-spacing:2px; color:#3A6080; display:flex; justify-content:space-between; align-items:center; }
+  .ai-group { border-bottom:1px solid #0E2030; }
+  .ai-group:last-child { border-bottom:none; }
+  .ai-group-title { padding:10px 16px 6px; font-family:'Bebas Neue',sans-serif; font-size:12px; letter-spacing:2px; }
+  .ai-player-row { display:flex; align-items:center; justify-content:space-between; padding:7px 16px; border-top:1px solid #0A1A1E; }
+  .ai-player-row:hover { background:rgba(255,255,255,.02); }
+  .btn-apply { background:linear-gradient(90deg,rgba(0,180,100,.2),rgba(0,140,80,.15)); border-color:#0A6040; color:#30D890; padding:10px 20px; font-size:14px; width:100%; margin-top:12px; }
+  .btn-apply:hover { border-color:#20A060; color:#50F0A0; }
   @media (max-width:600px) {
     .picks-grid { grid-template-columns:1fr; }
     .col-header,.prow { grid-template-columns:20px 1fr 36px 32px 32px 0 0 70px; }
@@ -632,9 +655,137 @@ export default function App() {
   const [search, setSearch]             = useState("");
   const [filterGroup, setFilterGroup]   = useState("ALL");
 
+  // ── Screenshot / AI vision state ──────────────────────────────────────────
+  const [screenshotImg, setScreenshotImg]   = useState(null);   // base64 data URL
+  const [aiStatus, setAiStatus]             = useState(null);   // null | "thinking" | "success" | "error"
+  const [aiMessage, setAiMessage]           = useState("");
+  const [aiPools, setAiPools]               = useState(null);   // { 1:[], 2:[], 3:[] } from AI parse
+  const [dragOver, setDragOver]             = useState(false);
+  const fileInputRef                        = useState(null);
+
   const addLog = useCallback((msg) => {
     setDiagLogs(prev => [...prev, { msg, ts: new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"}) }]);
   }, []);
+
+  // ── AI Screenshot Parser ────────────────────────────────────────────────────
+  const parseScreenshot = useCallback(async (dataUrl) => {
+    setAiStatus("thinking");
+    setAiMessage("Sending screenshot to Claude AI…");
+    setAiPools(null);
+
+    try {
+      // Strip the data:image/...;base64, prefix
+      const base64 = dataUrl.split(",")[1];
+      const mimeMatch = dataUrl.match(/data:([^;]+);base64/);
+      const mediaType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1500,
+          messages: [{
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: { type: "base64", media_type: mediaType, data: base64 }
+              },
+              {
+                type: "text",
+                text: `This is a screenshot from the Tim Hortons NHL Hockey Challenge app.
+Extract all player names organized into their pick groups (Pick 1, Pick 2, Pick 3).
+Return ONLY a JSON object in this exact format, nothing else:
+{
+  "1": [{"name":"First Last","team":"ABC","pos":"F"},…],
+  "2": [{"name":"First Last","team":"ABC","pos":"F"},…],
+  "3": [{"name":"First Last","team":"ABC","pos":"F"},…]
+}
+Rules:
+- Use 3-letter NHL team abbreviations (TOR, EDM, MTL, etc.)
+- pos is "F" for forwards, "D" for defensemen, "G" for goalies
+- If team is not visible use ""
+- If a group is not visible in the screenshot use []
+- Output ONLY the JSON, no explanation, no markdown`
+              }
+            ]
+          }]
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `API error ${response.status}`);
+      }
+
+      const data = await response.json();
+      const text = data.content?.map(b => b.text || "").join("") || "";
+
+      // Strip markdown fences if present
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+
+      // Validate and normalise
+      const newPools = { 1:[], 2:[], 3:[] };
+      [1,2,3].forEach(gn => {
+        const raw = parsed[String(gn)] || parsed[gn] || [];
+        newPools[gn] = raw
+          .filter(p => p.name && p.name.includes(" "))
+          .map(p => ({
+            name:     p.name.trim(),
+            team:     (p.team || "").toUpperCase(),
+            pos:      p.pos || "F",
+            gp:       0,   // will be enriched by NHL stats
+            g:        0,
+            a:        0,
+            pts:      0,
+            shotsGP:  0,
+            _fromScreenshot: true,
+          }));
+      });
+
+      const total = newPools[1].length + newPools[2].length + newPools[3].length;
+      if (total < 3) throw new Error("AI found fewer than 3 players — try a clearer screenshot");
+
+      // Enrich with live NHL stats immediately
+      const statsMap = await fetchNHLStats();
+      if (statsMap.size > 0) {
+        [1,2,3].forEach(gn => {
+          newPools[gn] = newPools[gn].map(p => enrichWithNHLStats(p, statsMap));
+        });
+      }
+
+      setAiPools(newPools);
+      setAiStatus("success");
+      setAiMessage(`✓ AI found ${total} players across 3 groups — click Apply to use these pools`);
+      addLog(`✓ Screenshot parsed: ${total} players extracted by Claude AI`);
+    } catch (e) {
+      setAiStatus("error");
+      setAiMessage(`✗ ${e.message}`);
+      addLog(`✗ Screenshot parse failed: ${e.message}`);
+    }
+  }, [addLog]);
+
+  const handleScreenshotFile = useCallback((file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setScreenshotImg(e.target.result);
+      setAiPools(null);
+      setAiStatus(null);
+      parseScreenshot(e.target.result);
+    };
+    reader.readAsDataURL(file);
+  }, [parseScreenshot]);
+
+  const applyAiPools = useCallback(() => {
+    if (!aiPools) return;
+    setPools(aiPools);
+    setPoolSource("📸 Screenshot (AI)");
+    addLog("✓ Applied AI-parsed pools from screenshot");
+    setActiveTab("picks");
+  }, [aiPools, addLog]);
 
   // ── Load games ──────────────────────────────────────────────────────────────
   const loadGames = useCallback(async () => {
@@ -949,6 +1100,7 @@ export default function App() {
             {id:"games",   label:`📅 GAMES (${games.length})`},
             {id:"browse",  label:"📋 BROWSE ALL"},
             {id:"diag",    label:"🔬 DIAGNOSTICS"},
+            {id:"screenshot", label:"📸 SCREENSHOT"},
           ].map(t => (
             <button key={t.id} className={`tab ${activeTab===t.id?"active":"inactive"}`} onClick={()=>setActiveTab(t.id)}>
               {t.label}
@@ -1123,6 +1275,112 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            </>
+          )}
+
+          {/* SCREENSHOT UPLOAD */}
+          {activeTab === "screenshot" && (
+            <>
+              <div className="info-box">
+                <strong>📸 Screenshot Import:</strong> Take a screenshot of the Tim Hortons NHL Hockey Challenge app showing today's player pools. Upload it here and Claude AI will automatically read all 3 groups and import them — giving you the exact same players Tims is offering today, enriched with live NHL stats.
+              </div>
+
+              {/* Upload zone */}
+              {!screenshotImg && (
+                <div
+                  className={`upload-zone${dragOver?" drag":""}`}
+                  onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+                  onDragLeave={()=>setDragOver(false)}
+                  onDrop={e=>{e.preventDefault();setDragOver(false);handleScreenshotFile(e.dataTransfer.files[0]);}}
+                >
+                  <input type="file" accept="image/*" onChange={e=>handleScreenshotFile(e.target.files[0])}/>
+                  <div className="upload-icon">📱</div>
+                  <div className="upload-title">DROP SCREENSHOT HERE</div>
+                  <div className="upload-sub">
+                    Or tap/click to choose a file<br/>
+                    Supports PNG, JPG, HEIC (iPhone screenshots)<br/>
+                    <strong style={{color:"#5ABCE0"}}>Take a screenshot of the Tims app showing Pick 1, Pick 2 & Pick 3 players</strong>
+                  </div>
+                </div>
+              )}
+
+              {/* Preview */}
+              {screenshotImg && (
+                <div className="preview-wrap">
+                  <img src={screenshotImg} className="preview-img" alt="Screenshot preview"/>
+                  <button className="preview-clear btn" onClick={()=>{setScreenshotImg(null);setAiPools(null);setAiStatus(null);}}>✕ CLEAR</button>
+                </div>
+              )}
+
+              {/* AI Status */}
+              {aiStatus && (
+                <div className={`ai-status ${aiStatus}`}>
+                  {aiStatus==="thinking" && <span className="spin" style={{fontSize:20}}>⟳</span>}
+                  {aiStatus==="success"  && <span style={{fontSize:20}}>✅</span>}
+                  {aiStatus==="error"    && <span style={{fontSize:20}}>❌</span>}
+                  <span>{aiMessage}</span>
+                </div>
+              )}
+
+              {/* AI Results preview */}
+              {aiPools && (
+                <div className="ai-result">
+                  <div className="ai-result-header">
+                    <span>AI EXTRACTED PLAYERS</span>
+                    <span style={{color:"#5ABCE0"}}>{[1,2,3].reduce((t,g)=>t+aiPools[g].length,0)} PLAYERS FOUND</span>
+                  </div>
+                  {[1,2,3].map(gn => {
+                    const cfg = GROUP_CONFIG[gn];
+                    return (
+                      <div key={gn} className="ai-group">
+                        <div className="ai-group-title" style={{color:cfg.color}}>
+                          {cfg.label} — {cfg.subtitle} ({aiPools[gn].length} players)
+                        </div>
+                        {aiPools[gn].map((p,i) => {
+                          const sc = playerScore(p);
+                          const sl = scoreLabel(sc);
+                          return (
+                            <div key={i} className="ai-player-row">
+                              <div>
+                                <span style={{fontWeight:600,color:"#D6EAF8"}}>{p.name}</span>
+                                {p._liveStats && <span className="live-chip">LIVE STATS</span>}
+                                <span style={{fontSize:11,color:"#3A6080",marginLeft:8}}>{p.pos} · {p.team||"?"}</span>
+                              </div>
+                              <div style={{display:"flex",gap:16,alignItems:"center"}}>
+                                {p.g > 0 && <span style={{fontSize:12,color:"#5A8CAA"}}>{p.g}G · {(p.shotsGP||0).toFixed(1)} sh/GP</span>}
+                                <span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:16,color:sl.color}}>{sc > 0 ? sc.toFixed(0) : "—"}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                  <div style={{padding:"0 16px 16px"}}>
+                    <button className="btn btn-apply" onClick={applyAiPools}>
+                      ⚡ APPLY THESE PLAYERS TO MY PICK BOARD
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* New upload button if already uploaded */}
+              {screenshotImg && (
+                <div style={{padding:"0 20px",marginTop:12}}>
+                  <label style={{display:"block",position:"relative",cursor:"pointer"}}>
+                    <input type="file" accept="image/*" style={{position:"absolute",opacity:0,width:0,height:0}} onChange={e=>handleScreenshotFile(e.target.files[0])}/>
+                    <div className="btn btn-refresh" style={{width:"100%",padding:"10px",textAlign:"center",display:"block"}}>📱 UPLOAD A DIFFERENT SCREENSHOT</div>
+                  </label>
+                </div>
+              )}
+
+              <div className="info-box" style={{marginTop:16}}>
+                <strong>Tips for best results:</strong>
+                <br/>• Screenshot the full Pick 1 / Pick 2 / Pick 3 screen — all 3 groups visible at once works best
+                <br/>• If your screen only shows one group, upload 3 separate screenshots (they'll merge)
+                <br/>• The AI reads player names directly — even partial scrolls work
+                <br/>• After applying, stats are enriched live from the NHL API automatically
               </div>
             </>
           )}
