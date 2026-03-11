@@ -381,6 +381,67 @@ async function scrape5v5Hockey() {
   return { groups, source: "5v5hockey.com" };
 }
 
+
+// ── Scraper 3: timnhlassist.com ───────────────────────────────────────────────
+// Focuses on recent form (last 5-10 games) + team stats + game lock times
+async function scrapeTimNHLAssist() {
+  const { html } = await fetchViaProxy("https://timnhlassist.com");
+  const doc    = new DOMParser().parseFromString(html, "text/html");
+  const groups = { 1:[], 2:[], 3:[] };
+
+  // timnhlassist uses "Pick 1 / Pick 2 / Pick 3" or "Group 1" style headings
+  const allEls = [...doc.querySelectorAll("*")];
+  for (const el of allEls) {
+    const text = (el.childNodes[0]?.nodeValue || el.textContent || "").trim();
+    const m = text.match(/^(?:Pick|Group|Tier|Category)\s*#?\s*([123])\s*$/i);
+    if (!m || el.children.length > 3) continue;
+    const gn = parseInt(m[1]);
+    if (groups[gn].length > 0) continue;
+    let node = el;
+    for (let j = 0; j < 25; j++) {
+      node = node.nextElementSibling || node.parentElement?.nextElementSibling;
+      if (!node) break;
+      const tbl = node.tagName === "TABLE" ? node : node.querySelector("table");
+      if (tbl && tbl.querySelectorAll("tr").length > 1) {
+        groups[gn].push(...parsePickTable(tbl));
+        break;
+      }
+    }
+  }
+
+  // Fallback: first 3 tables
+  if (groups[1].length + groups[2].length + groups[3].length < 5) {
+    groups[1]=[]; groups[2]=[]; groups[3]=[];
+    [...doc.querySelectorAll("table")].slice(0, 3).forEach((t, i) => {
+      groups[i + 1].push(...parsePickTable(t));
+    });
+  }
+
+  // Fallback: look for lists/divs with player names
+  if (groups[1].length + groups[2].length + groups[3].length < 5) {
+    groups[1]=[]; groups[2]=[]; groups[3]=[];
+    [1,2,3].forEach(gn => {
+      const sels = [
+        `[class*="pick${gn}"]`, `[id*="pick${gn}"]`,
+        `[class*="group${gn}"]`, `[id*="group${gn}"]`,
+        `[class*="tier${gn}"]`, `[data-group="${gn}"]`,
+      ];
+      for (const sel of sels) {
+        try {
+          const container = doc.querySelector(sel);
+          if (!container) continue;
+          const tbl = container.tagName === "TABLE" ? container : container.querySelector("table");
+          if (tbl) { groups[gn].push(...parsePickTable(tbl)); break; }
+        } catch {}
+      }
+    });
+  }
+
+  const total = groups[1].length + groups[2].length + groups[3].length;
+  if (total < 5) throw new Error(`timnhlassist: only ${total} players parsed`);
+  return { groups, source: "timnhlassist.com" };
+}
+
 // ── Master pool fetcher ───────────────────────────────────────────────────────
 // Runs all scrapers in parallel; first success wins. Enriches with live stats.
 async function fetchPools(onLog) {
@@ -389,10 +450,12 @@ async function fetchPools(onLog) {
 
   onLog("Trying hockeychallengehelper.com…");
   onLog("Trying 5v5hockey.com…");
+  onLog("Trying timnhlassist.com…");
 
   const results = await Promise.allSettled([
     scrapeHelperSite(),
     scrape5v5Hockey(),
+    scrapeTimNHLAssist(),
   ]);
 
   let groups = null;
@@ -1071,9 +1134,10 @@ export default function App() {
                 <strong>Data Sources Attempted (in order):</strong>
                 <br/>1. hockeychallengehelper.com (3 CORS proxies)
                 <br/>2. 5v5hockey.com/ai-betting/tims-picks/ (3 CORS proxies)
-                <br/>3. NHL API — skater-stats-leaders (live stat enrichment)
-                <br/>4. NHL API — schedule/now (live game scores)
-                <br/>5. Static fallback pools (always works)
+                <br/>3. timnhlassist.com (3 CORS proxies)
+                <br/>4. NHL API — skater-stats-leaders (live stat enrichment)
+                <br/>5. NHL API — schedule/now (live game scores)
+                <br/>6. Static fallback pools (always works)
                 <br/><br/>
                 <strong>CORS Proxies tried:</strong> api.allorigins.win → corsproxy.io → thingproxy.freeboard.io
               </div>
